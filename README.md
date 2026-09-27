@@ -24,6 +24,27 @@ the command line to render a netlist directly to a PNG image.
   SPICE/PSpice decks.
 - Command-line PNG export for use in scripts, reports, and other applications.
 
+## Example output
+
+These schematics were generated directly from the linked netlists using the
+headless renderer. Click an image to view it at full size.
+
+| Common-emitter amplifier | Full-wave bridge rectifier |
+|:---:|:---:|
+| [![Common-emitter amplifier schematic](docs/examples/common-emitter.png)](docs/examples/common-emitter.png) | [![Full-wave bridge rectifier schematic](docs/examples/bridge-rectifier.png)](docs/examples/bridge-rectifier.png) |
+| [Source netlist](docs/examples/common-emitter.cir) | [Source netlist](docs/examples/bridge-rectifier.cir) |
+
+| Differential pair | VCVS feedback loop |
+|:---:|:---:|
+| [![Differential-pair schematic](docs/examples/differential-pair.png)](docs/examples/differential-pair.png) | [![VCVS feedback schematic](docs/examples/vcvs-feedback.png)](docs/examples/vcvs-feedback.png) |
+| [Source netlist](docs/examples/differential-pair.cir) | [Source netlist](docs/examples/vcvs-feedback.cir) |
+
+Regenerate an example with:
+
+```text
+netlist_viewer.exe --input docs/examples/common-emitter.cir --output common-emitter.png
+```
+
 ## What is a netlist?
 
 A [netlist](https://en.wikipedia.org/wiki/Netlist) describes the components in

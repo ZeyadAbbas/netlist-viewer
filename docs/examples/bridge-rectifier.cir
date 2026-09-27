@@ -1,0 +1,9 @@
+* Full-wave bridge rectifier with reservoir capacitor and resistive load
+VAC AC1 AC2 SIN(0 12 60)
+D1 AC1 VRAW D
+D2 AC2 VRAW D
+D3 0 AC1 D
+D4 0 AC2 D
+C1 VRAW 0 1000u
+RLOAD VRAW 0 1k
+.END

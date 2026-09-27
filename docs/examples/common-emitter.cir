@@ -1,0 +1,13 @@
+* Common-emitter amplifier with bias, coupling, bypass and load
+VCCSRC VCC 0 DC 12
+VIN VIN 0 SIN(0 0.02 1k)
+CIN VIN BASE 1u
+R1 VCC BASE 47k
+R2 BASE 0 10k
+Q1 COL BASE EMIT NPN
+RC VCC COL 3.3k
+RE EMIT 0 1k
+CE EMIT 0 100u
+COUT COL VOUT 10u
+RL VOUT 0 10k
+.END
