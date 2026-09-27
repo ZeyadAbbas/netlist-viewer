@@ -14,6 +14,8 @@
 // headers
 // ----------------------------------------------------------------------------
 
+#include <algorithm>
+
 #include "netlist.h"
 
 
@@ -60,6 +62,21 @@ protected:
             r.Offset(m_position*gridSpacing);
             return wxRect(r.m_x, r.m_y, r.m_width, r.m_height);
         }
+
+    //! Rotates an axis-aligned direction using the same convention as the
+    //! device graphics and relative node positions.
+    wxPoint rotateGridDirection(const wxPoint& direction) const
+    {
+        switch (m_rotation)
+        {
+        case SVR_0:   return direction;
+        case SVR_90:  return wxPoint(-direction.y, direction.x);
+        case SVR_180: return wxPoint(-direction.x, -direction.y);
+        case SVR_270: return wxPoint(direction.y, -direction.x);
+        }
+
+        return direction;
+    }
 
 private:     // serialization functions
 
@@ -167,12 +184,79 @@ public:     // drawing functions
         {
             draw(gc, gridSpacing, pen);
 
-            wxGraphicsMatrix m = gc->CreateMatrix();
-            m.Translate((m_position.x+0.5)*gridSpacing, (m_position.y+0.5)*gridSpacing);
-            m.Rotate(int(m_rotation+1)*M_PI/2);
-            gc->SetTransform(m);
+            const wxString name = m_name.empty()
+                ? wxString()
+                : wxString::FromUTF8(m_name.c_str());
+            const wxString detail = getDescription();
+            const bool showDetail = !detail.empty() && detail != name;
+            if (name.empty() && !showDetail)
+                return;
 
-            gc->DrawText(getDescription(), 0, 0);
+            // Keep schematic annotations horizontal regardless of component
+            // orientation. This is easier to scan than rotating values with
+            // the symbol body and matches conventional schematics.
+            gc->SetTransform(gc->CreateMatrix());
+            wxFont nameFont = *wxSWISS_FONT;
+            nameFont.SetWeight(wxFONTWEIGHT_BOLD);
+            wxFont detailFont = *wxSWISS_FONT;
+            if (detailFont.GetPointSize() > 7)
+                detailFont.SetPointSize(detailFont.GetPointSize()-1);
+
+            wxDouble nameW = 0, nameH = 0, detailW = 0, detailH = 0;
+            wxDouble descent = 0, externalLeading = 0;
+            if (!name.empty())
+            {
+                gc->SetFont(nameFont, *wxBLACK);
+                gc->GetTextExtent(name, &nameW, &nameH,
+                                  &descent, &externalLeading);
+            }
+            if (showDetail)
+            {
+                gc->SetFont(detailFont, *wxBLACK);
+                gc->GetTextExtent(detail, &detailW, &detailH,
+                                  &descent, &externalLeading);
+            }
+
+            const double lineGap = showDetail && !name.empty() ? 1.0 : 0.0;
+            const double textW = std::max(nameW, detailW);
+            const double textH = nameH + lineGap + detailH;
+
+            const wxRect bb = getRealBoundingBox(gridSpacing);
+            // Leave enough white space that ref/value text never visually
+            // merges with a component lead or body at the normal 40 px grid.
+            const double gap = std::max(6.0, gridSpacing / 5.0);
+            double x = bb.GetLeft();
+            double y = bb.GetTop() - textH - gap;
+
+            // Tall parts read best with their annotation on the right.
+            // Horizontal parts keep the annotation centered above.
+            if (bb.GetHeight() >= bb.GetWidth())
+            {
+                x = bb.GetRight() + gap;
+                y = bb.GetTop() + (bb.GetHeight() - textH) / 2.0;
+            }
+            else
+            {
+                x = bb.GetLeft() + (bb.GetWidth() - textW) / 2.0;
+            }
+
+            if (!name.empty())
+            {
+                gc->SetFont(nameFont, *wxBLACK);
+                const double lineX = bb.GetHeight() >= bb.GetWidth()
+                    ? x
+                    : x + (textW-nameW)/2.0;
+                gc->DrawText(name, lineX, y);
+                y += nameH + lineGap;
+            }
+            if (showDetail)
+            {
+                gc->SetFont(detailFont, *wxBLACK);
+                const double lineX = bb.GetHeight() >= bb.GetWidth()
+                    ? x
+                    : x + (textW-detailW)/2.0;
+                gc->DrawText(detail, lineX, y);
+            }
         }
 
     //! Returns the grid position (relative to zero-th node) for the given node index
@@ -181,6 +265,11 @@ public:     // drawing functions
     //! Note that the values returned by this function define the (default) orientation
     //! of the component.
     virtual wxPoint getRelativeGridNodePosition(unsigned int nodeIdx) const = 0;
+
+    //! Returns the direction in which a wire should leave the given terminal.
+    //! The result is one axis-aligned grid step pointing away from the body of
+    //! the component, including the current device rotation.
+    virtual wxPoint getRelativeGridNodeDirection(unsigned int nodeIdx) const = 0;
 
     //! @overload
     //! Returns the grid position for the given node. If this device is
@@ -304,6 +393,12 @@ public:
         return svInvalidPoint;
     }
 
+    wxPoint getRelativeGridNodeDirection(unsigned int nodeIdx) const
+    {
+        wxASSERT(nodeIdx == 0);
+        return rotateGridDirection(wxPoint(0, 1));
+    }
+
     int getTopmostGridNodePosition() const { return 0; }
     int getLeftmostGridNodePosition() const { return 0; }
     int getRightmostGridNodePosition() const { return 0; }
@@ -384,6 +479,16 @@ public:
             }
         }
         return svInvalidPoint;
+    }
+
+    wxPoint getRelativeGridNodeDirection(unsigned int nodeIdx) const
+    {
+        wxASSERT(nodeIdx <= 1);
+        if (nodeIdx == 0)
+            return rotateGridDirection(wxPoint(0, -1));
+        if (nodeIdx == 1)
+            return rotateGridDirection(wxPoint(0, 1));
+        return wxPoint(0, 0);
     }
 
     int getTopmostGridNodePosition() const { return m_rotation == SVR_180 ? -1 : 0; }
@@ -481,6 +586,11 @@ private:     // serialization functions
 
 public:
     svCapacitor() {}
+
+    wxString getDescription() const
+    {
+        return svString::formatValue(m_value) + wxT("F");
+    }
 
     char getSPICEid() const { return 'C'; }
     std::string getHumanReadableDesc() const { return "CAPACITOR"; }
@@ -586,6 +696,11 @@ private:     // serialization functions
 public:
     svInductor() {}
 
+    wxString getDescription() const
+    {
+        return svString::formatValue(m_value) + wxT("H");
+    }
+
     char getSPICEid() const { return 'L'; }
     std::string getHumanReadableDesc() const { return "INDUCTOR"; }
     svBaseDevice* clone() const { return new svInductor(*this); }
@@ -637,6 +752,11 @@ private:     // serialization functions
 
 public:
     svDiode() {}
+
+    wxString getDescription() const
+    {
+        return wxString::FromUTF8(m_modelName.c_str());
+    }
 
     char getSPICEid() const { return 'D'; }
     std::string getHumanReadableDesc() const { return "DIODE"; }
@@ -710,6 +830,11 @@ public:
         m_bNChannel = true;
     }
 
+    virtual wxString getDescription() const
+    {
+        return wxString::FromUTF8(m_modelName.c_str());
+    }
+
     unsigned int getNodesCount() const { return 3; }
 
     wxPoint getRelativeGridNodePosition(unsigned int nodeIdx) const
@@ -744,6 +869,18 @@ public:
             }
         }
         return svInvalidPoint;
+    }
+
+    wxPoint getRelativeGridNodeDirection(unsigned int nodeIdx) const
+    {
+        wxASSERT(nodeIdx <= 2);
+        if (nodeIdx == 0)
+            return rotateGridDirection(wxPoint(0, -1));
+        if (nodeIdx == 1)
+            return rotateGridDirection(wxPoint(-1, 0));
+        if (nodeIdx == 2)
+            return rotateGridDirection(wxPoint(0, 1));
+        return wxPoint(0, 0);
     }
 
     int getTopmostGridNodePosition() const
@@ -795,11 +932,24 @@ public:
     //    J{name} {d} {g} {s} {model} [{area]}
     //    M{name} {d} {g} {s} {sub} {mdl}  [L={value}]  [W={value}]
     //    Q{name} {c} {b} {e} [{subs}] {model} [{area}]
-    bool parseSPICEProperty(unsigned int WXUNUSED(j), const std::string& prop)
+    bool parseSPICEProperty(unsigned int j, const std::string& prop)
     {
-        m_modelName = prop;
+        // The first transistor-specific token is the model name. Keep later
+        // area/geometry parameters from replacing the label, and use common
+        // SPICE model naming conventions to render P-channel/PNP arrows
+        // deterministically. Unknown model names retain the conventional
+        // N-channel/NPN default.
+        if (j == 0)
+        {
+            m_modelName = prop;
 
-        // FIXME: set m_bNChannel
+            const wxString model = wxString::FromUTF8(prop.c_str()).Upper();
+            m_bNChannel =
+                !(model.StartsWith(wxT("PNP")) ||
+                  model.Find(wxT("PMOS")) != wxNOT_FOUND ||
+                  model.Find(wxT("PFET")) != wxNOT_FOUND ||
+                  model.Find(wxT("PJFET")) != wxNOT_FOUND);
+        }
 
         return true;
     }
@@ -1002,24 +1152,59 @@ public:
     std::string getHumanReadableDesc() const { return "JFET"; }
     svBaseDevice* clone() const { return new svJFET(*this); }
 
-    static void initGraphics(wxGraphicsContext* WXUNUSED(gc), unsigned int WXUNUSED(gridSpacing))
+    static void initGraphics(wxGraphicsContext* gc, unsigned int gridSpacing)
     {
-        /*
-        const wxRealPoint& collectorPos = getDrainGridNodePosition();
-        const wxRealPoint& basePos = getGateGridNodePosition()*gridSpacing;
-        const wxRealPoint& emitterPos = getSourceGridNodePosition()*gridSpacing;
-        double w = 2*gridSpacing/3.0, l = gridSpacing/3.0,
-               oxw = gridSpacing/10.0;
-        */
-        // TODO
+        const wxRealPoint drainPos = getDrainGridNodePosition()*gridSpacing;
+        const wxRealPoint gatePos = getGateGridNodePosition()*gridSpacing;
+        const wxRealPoint sourcePos = getSourceGridNodePosition()*gridSpacing;
+        const double halfChannel = gridSpacing/3.0;
+
+        s_path = gc->CreatePath();
+        wxASSERT(!s_path.IsNull());
+
+        // Conventional JFET geometry: a vertical drain/source channel with the
+        // gate entering from the left. Device rotation is handled by setupGC().
+        drawLine(s_path, drainPos,
+                 wxRealPoint(drainPos.x, gatePos.y-halfChannel));
+        drawLine(s_path,
+                 wxRealPoint(drainPos.x, gatePos.y-halfChannel),
+                 wxRealPoint(drainPos.x, gatePos.y+halfChannel));
+        drawLine(s_path,
+                 wxRealPoint(sourcePos.x, gatePos.y+halfChannel),
+                 sourcePos);
+        drawLine(s_path, gatePos, wxRealPoint(drainPos.x, gatePos.y));
+
+        // Arrow points into the channel for an N-channel JFET and outward for
+        // a P-channel device.
+        const double arrowSz = gridSpacing/10.0;
+        s_pathArrow = gc->CreatePath();
+        wxASSERT(!s_pathArrow.IsNull());
+        s_pathArrow.MoveToPoint(0, 0);
+        s_pathArrow.AddLineToPoint(-2*arrowSz, -arrowSz);
+        s_pathArrow.AddLineToPoint(-2*arrowSz, arrowSz);
+        s_pathArrow.CloseSubpath();
     }
 
     static void releaseGraphics()
         { s_path.UnRef(); s_pathArrow.UnRef(); }
 
-    void draw(wxGraphicsContext* WXUNUSED(gc), unsigned int WXUNUSED(gridSpacing), const wxPen& WXUNUSED(pen)) const
+    void draw(wxGraphicsContext* gc, unsigned int gridSpacing, const wxPen& pen) const
     {
-        // TODO
+        const wxRealPoint gatePos = getGateGridNodePosition()*gridSpacing;
+
+        setupGC(gc, gridSpacing, pen);
+        gc->StrokePath(s_path);
+
+        wxGraphicsMatrix m = gc->GetTransform();
+        gc->SetBrush(wxBrush(pen.GetColour()));
+
+        // Put the arrow near the channel so it remains legible at normal grid
+        // sizes without covering the gate lead or channel line.
+        m.Translate(-gridSpacing/8.0, gatePos.y);
+        if (!m_bNChannel)
+            m.Rotate(M_PI);
+        gc->SetTransform(m);
+        gc->FillPath(s_pathArrow, wxODDEVEN_RULE);
     }
 
     wxRect getRealBoundingBox(unsigned int gridSpacing) const
@@ -1125,6 +1310,9 @@ public:
 class svIndipendentSource : public svSource
 {
     double m_value;
+    bool m_ignoreWaveformProperties;
+    bool m_hasParsedValue;
+    std::string m_waveformText;
 
 private:     // serialization functions
     friend class boost::serialization::access;
@@ -1137,7 +1325,28 @@ private:     // serialization functions
         }
 
 public:
-    svIndipendentSource() {}
+    svIndipendentSource()
+        : m_value(0),
+          m_ignoreWaveformProperties(false),
+          m_hasParsedValue(false)
+    {
+    }
+
+    virtual wxString getDescription() const
+    {
+        if (!m_waveformText.empty())
+        {
+            wxString waveform = wxString::FromUTF8(m_waveformText.c_str());
+            // SPICE often separates waveform arguments with whitespace. Comma
+            // separators are much easier to read as a schematic annotation.
+            waveform.Replace(wxT(" "), wxT(", "));
+            return waveform;
+        }
+
+        wxString ret = svString::formatValue(m_value);
+        ret += getSPICEid() == 'I' ? wxT("A") : wxT("V");
+        return ret;
+    }
 
     // SPICE line for such kind of devices is something like:
     // I|V{name} {+node} {-node} [[DC] {value}] [AC {mag} [{phase}]]
@@ -1147,12 +1356,47 @@ public:
         svString str(prop);
         double temp;
 
-        if (str.getValue(&temp))
+        if (m_ignoreWaveformProperties)
+        {
+            if (!m_waveformText.empty())
+                m_waveformText += " ";
+            m_waveformText += prop;
+            return true;
+        }
+
+        const wxString upper = str.Upper();
+        if (upper == "SIN" || upper.StartsWith("SIN(") ||
+            upper == "PULSE" || upper.StartsWith("PULSE(") ||
+            upper == "PWL" || upper.StartsWith("PWL(") ||
+            upper == "EXP" || upper.StartsWith("EXP(") ||
+            upper == "SFFM" || upper.StartsWith("SFFM("))
+        {
+            // Waveform details affect simulation only. They may span several
+            // whitespace-separated tokens, so ignore the rest of this source
+            // definition once a supported waveform form begins.
+            m_waveformText = prop;
+            m_ignoreWaveformProperties = true;
+            return true;
+        }
+
+        if (upper == "DC" || upper == "AC")
+        {
+            // PSpice accepts source forms such as "V1 in 0 DC 5" and
+            // "V1 in 0 AC 1". The keyword affects simulation, not the
+            // schematic connectivity, so the following numeric token can be
+            // parsed normally as the displayed source value.
+            return true;
+        }
+        else if (str.getValue(&temp))
         {
             // this must be the {value} property...
-            m_value = temp;
+            if (!m_hasParsedValue)
+            {
+                m_value = temp;
+                m_hasParsedValue = true;
+            }
         }
-        else if (str.Upper().StartsWith("DC=", &strtemp))
+        else if (upper.StartsWith("DC=", &strtemp))
         {
             // this must be the DC value property...
             if (!svString(strtemp).getValue(&temp))
@@ -1162,6 +1406,7 @@ public:
             }
 
             m_value = temp;
+            m_hasParsedValue = true;
         }
         else
         {

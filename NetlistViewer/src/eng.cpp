@@ -1,7 +1,7 @@
 /* Print a floating-point number in engineering notation */
 /* Documentation: http://www.cs.tut.fi/~jkorpela/c/eng.html */
 
-#define MICRO "�"
+#define MICRO "u"
 
 #define PREFIX_START (-24)
 /* Smallest power of ten for which there is a prefix defined.

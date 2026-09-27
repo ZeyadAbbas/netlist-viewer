@@ -27,12 +27,17 @@
 
 #include <wx/aboutdlg.h>
 #include <wx/dcbuffer.h>
+#include <wx/dcmemory.h>
+#include <wx/image.h>
+#include <wx/log.h>
 #include <wx/stdpaths.h>
 #include <wx/filename.h>
 
 #include "netlist.h"
 #include "devices.h"
+#include <cstdio>
 #include <fstream>
+#include <algorithm>
 
 // ----------------------------------------------------------------------------
 // constants
@@ -57,6 +62,272 @@
 #define FILTER_NETLISTVIEWERSCHEMATIC \
     FILTER_NETLISTVIEWERSCHEMATIC_FILES "|" \
     FILTER_ALL_FILES
+
+static const unsigned int DEFAULT_GRID_SIZE = 40;
+
+struct svHeadlessOptions
+{
+    wxString inputPath;
+    wxString outputPath;
+    bool showHelp;
+
+    svHeadlessOptions()
+        : showHelp(false)
+    {
+    }
+};
+
+class svScopedLogTarget
+{
+    wxLog* m_previous;
+
+public:
+    explicit svScopedLogTarget(wxLog* target)
+        : m_previous(wxLog::SetActiveTarget(target))
+    {
+    }
+
+    ~svScopedLogTarget()
+    {
+        wxLog::SetActiveTarget(m_previous);
+    }
+};
+
+static bool HasHeadlessCommandLineArguments(int argc, wxChar** argv)
+{
+    for (int i=1; i<argc; i++)
+    {
+        const wxString arg(argv[i]);
+        if (arg == wxT("-i") || arg == wxT("--input") ||
+            arg == wxT("-o") || arg == wxT("--output") ||
+            arg == wxT("-h") || arg == wxT("--help"))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static void PrintCommandLineUsage(FILE* stream, const wxString& programName)
+{
+    wxFprintf(stream,
+        wxT("Netlist Viewer\n")
+        wxT("Usage:\n")
+        wxT("  %s\n")
+        wxT("  %s --input <netlist> --output <image.png>\n")
+        wxT("  %s --help\n")
+        wxT("\n")
+        wxT("Options:\n")
+        wxT("  -i, --input <netlist>    SPICE/PSpice netlist to render.\n")
+        wxT("  -o, --output <image.png> PNG image to create.\n")
+        wxT("  -h, --help               Show this help.\n"),
+        programName.c_str(), programName.c_str(), programName.c_str());
+}
+
+static bool ParseHeadlessCommandLine(int argc, wxChar** argv,
+                                     svHeadlessOptions* options,
+                                     wxString* error)
+{
+    for (int i = 1; i < argc; ++i)
+    {
+        const wxString arg(argv[i]);
+
+        if (arg == wxT("-h") || arg == wxT("--help"))
+        {
+            options->showHelp = true;
+        }
+        else if (arg == wxT("-i") || arg == wxT("--input"))
+        {
+            if (!options->inputPath.empty())
+            {
+                *error = wxT("The input path was specified more than once.");
+                return false;
+            }
+            if (++i >= argc)
+            {
+                *error = wxT("Missing path after --input.");
+                return false;
+            }
+            options->inputPath = argv[i];
+        }
+        else if (arg == wxT("-o") || arg == wxT("--output"))
+        {
+            if (!options->outputPath.empty())
+            {
+                *error = wxT("The output path was specified more than once.");
+                return false;
+            }
+            if (++i >= argc)
+            {
+                *error = wxT("Missing path after --output.");
+                return false;
+            }
+            options->outputPath = argv[i];
+        }
+        else
+        {
+            *error = wxString::Format(wxT("Unknown option: %s"), arg.c_str());
+            return false;
+        }
+    }
+
+    if (options->showHelp)
+        return true;
+
+    if (options->inputPath.empty() || options->outputPath.empty())
+    {
+        *error = wxT("Headless rendering requires both --input and --output.");
+        return false;
+    }
+
+    wxFileName outputFile(options->outputPath);
+    if (outputFile.GetExt().CmpNoCase(wxT("png")) != 0)
+    {
+        *error = wxT("The output path must use the .png extension.");
+        return false;
+    }
+
+    return true;
+}
+
+static bool RenderNetlistToPng(const wxString& inputPath,
+                               const wxString& outputPath,
+                               wxString* error)
+{
+    wxFileName inputFile(inputPath);
+    if (!inputFile.FileExists())
+    {
+        *error = wxString::Format(wxT("Input netlist does not exist: %s"), inputPath.c_str());
+        return false;
+    }
+
+    svParserSPICE parser;
+    svCircuitArray subcktArray;
+    if (!parser.load(subcktArray, inputPath.ToStdString()))
+    {
+        *error = wxString::Format(wxT("Failed to parse netlist: %s"), inputPath.c_str());
+        return false;
+    }
+
+    if (subcktArray.empty())
+    {
+        *error = wxString::Format(
+            wxT("The netlist did not contain a drawable circuit: %s"), inputPath.c_str());
+        return false;
+    }
+
+    if (subcktArray.size() > 1)
+    {
+        *error = wxT("Netlists containing multiple subcircuits are not supported yet.");
+        return false;
+    }
+
+    svCircuit& circuit = subcktArray[0];
+    if (circuit.getDevices().empty())
+    {
+        *error = wxT("The netlist circuit does not contain any supported devices.");
+        return false;
+    }
+
+    circuit.placeDevices(SVPA_PLACE_NON_OVERLAPPED);
+
+    const wxRect bounds = circuit.getBoundingBox();
+
+    // Device bounds deliberately stay cheap to compute, while wires, junction
+    // trunks, rail markers and horizontal annotations can extend past them.
+    // Give the renderer a generous safety border here, then let the pixel crop
+    // below remove the unused white area from the exported PNG.
+    const int width = (bounds.x + bounds.width + 10) * DEFAULT_GRID_SIZE;
+    const int height = (bounds.y + bounds.height + 10) * DEFAULT_GRID_SIZE;
+    if (width <= 0 || height <= 0)
+    {
+        *error = wxT("Automatic placement produced an invalid image size.");
+        return false;
+    }
+
+    wxBitmap bitmap(width, height, 32);
+    if (!bitmap.IsOk())
+    {
+        *error = wxString::Format(
+            wxT("Could not allocate an image of %d x %d pixels."), width, height);
+        return false;
+    }
+
+    wxMemoryDC dc;
+    dc.SelectObject(bitmap);
+    dc.SetBackground(*wxWHITE_BRUSH);
+    dc.Clear();
+
+    wxGraphicsContext* gc = wxGraphicsContext::Create(dc);
+    if (!gc)
+    {
+        dc.SelectObject(wxNullBitmap);
+        *error = wxT("Could not create an off-screen graphics context.");
+        return false;
+    }
+
+    svDeviceFactory::initGraphics(gc, DEFAULT_GRID_SIZE);
+    circuit.draw(gc, DEFAULT_GRID_SIZE);
+    delete gc;
+
+    dc.SelectObject(wxNullBitmap);
+
+    wxImage image = bitmap.ConvertToImage();
+    if (!image.IsOk())
+    {
+        *error = wxT("Could not convert the rendered schematic to an image.");
+        return false;
+    }
+
+    // Tighten headless output around the actual schematic. Placement uses
+    // generous virtual margins so routing and labels never clip, but exported
+    // figures should not carry a large empty canvas into reports.
+    const unsigned char* pixels = image.GetData();
+    if (pixels)
+    {
+        int minX = image.GetWidth();
+        int minY = image.GetHeight();
+        int maxX = -1;
+        int maxY = -1;
+
+        for (int y=0; y<image.GetHeight(); y++)
+        {
+            for (int x=0; x<image.GetWidth(); x++)
+            {
+                const int idx = (y*image.GetWidth() + x) * 3;
+                if (pixels[idx] < 245 ||
+                    pixels[idx+1] < 245 ||
+                    pixels[idx+2] < 245)
+                {
+                    minX = std::min(minX, x);
+                    minY = std::min(minY, y);
+                    maxX = std::max(maxX, x);
+                    maxY = std::max(maxY, y);
+                }
+            }
+        }
+
+        if (maxX >= minX && maxY >= minY)
+        {
+            const int padding = 24;
+            minX = std::max(0, minX-padding);
+            minY = std::max(0, minY-padding);
+            maxX = std::min(image.GetWidth()-1, maxX+padding);
+            maxY = std::min(image.GetHeight()-1, maxY+padding);
+            image = image.GetSubImage(
+                wxRect(minX, minY, maxX-minX+1, maxY-minY+1));
+        }
+    }
+
+    if (!image.SaveFile(outputPath, wxBITMAP_TYPE_PNG))
+    {
+        *error = wxString::Format(wxT("Could not save PNG image: %s"), outputPath.c_str());
+        return false;
+    }
+
+    return true;
+}
 
 // IDs for the controls and the menu commands
 enum
@@ -87,8 +358,21 @@ enum
 class SpiceViewerApp : public wxApp
 {
 public:
+    SpiceViewerApp()
+        : m_headless(false),
+          m_devicesRegistered(false),
+          m_headlessExitCode(0)
+    {
+    }
+
     virtual bool OnInit();
+    virtual int OnRun();
     virtual int OnExit();
+
+private:
+    bool m_headless;
+    bool m_devicesRegistered;
+    int m_headlessExitCode;
 };
 
 // define a scrollable canvas for displaying the schematic
@@ -129,8 +413,8 @@ public:
     void UpdateVirtualSize()
     {
         wxRect rc = m_ckt.getBoundingBox();
-        SetVirtualSize((rc.x+rc.width+1)*m_gridSize, 
-                       (rc.y+rc.height+1)*m_gridSize);
+        SetVirtualSize((rc.x+rc.width+10)*m_gridSize,
+                       (rc.y+rc.height+10)*m_gridSize);
     }
 
     void ShowGrid(bool b)
@@ -187,12 +471,36 @@ wxIMPLEMENT_APP(SpiceViewerApp);
 
 bool SpiceViewerApp::OnInit()
 {
-    // call the base class initialization method, currently it only parses a
-    // few common command-line options but it could be do more in the future
-    if ( !wxApp::OnInit() )
-        return false;
+    svHeadlessOptions headlessOptions;
+    const wxString programName = wxFileName(argv[0]).GetFullName();
+    if (HasHeadlessCommandLineArguments(argc, argv))
+    {
+        m_headless = true;
+
+        wxString error;
+        if (!ParseHeadlessCommandLine(argc, argv, &headlessOptions, &error))
+        {
+            wxFprintf(stderr, wxT("Error: %s\n\n"), error.c_str());
+            PrintCommandLineUsage(stderr, programName);
+            m_headlessExitCode = 2;
+            return true;
+        }
+
+        if (headlessOptions.showHelp)
+        {
+            PrintCommandLineUsage(stdout, programName);
+            return true;
+        }
+    }
+    else
+    {
+        // Call the base class initialization method for normal GUI startup.
+        if (!wxApp::OnInit())
+            return false;
+    }
 
     svDeviceFactory::registerAllDevices();
+    m_devicesRegistered = true;
     setlocale(LC_NUMERIC, "C");
 
 #define SELF_TESTS 1
@@ -224,6 +532,30 @@ bool SpiceViewerApp::OnInit()
     }
 #endif
 
+    if (m_headless)
+    {
+        wxLogStderr stderrLog;
+        svScopedLogTarget logTarget(&stderrLog);
+
+        wxInitAllImageHandlers();
+
+        wxString error;
+        const bool rendered =
+            RenderNetlistToPng(headlessOptions.inputPath, headlessOptions.outputPath, &error);
+
+        if (!rendered)
+        {
+            wxFprintf(stderr, wxT("Error: %s\n"), error.c_str());
+            m_headlessExitCode = 1;
+            return true;
+        }
+
+        wxFprintf(stdout, wxT("Rendered %s to %s\n"),
+                  headlessOptions.inputPath.c_str(),
+                  headlessOptions.outputPath.c_str());
+        return true;
+    }
+
     // create the main application window
     SpiceViewerFrame *frame = new SpiceViewerFrame("Netlist viewer");
 
@@ -237,10 +569,21 @@ bool SpiceViewerApp::OnInit()
     return true;
 }
 
+int SpiceViewerApp::OnRun()
+{
+    if (m_headless)
+        return m_headlessExitCode;
+
+    return wxApp::OnRun();
+}
+
 int SpiceViewerApp::OnExit()
 {
-    svDeviceFactory::unregisterAllDevices();
-    svDeviceFactory::releaseGraphics();
+    if (m_devicesRegistered)
+    {
+        svDeviceFactory::unregisterAllDevices();
+        svDeviceFactory::releaseGraphics();
+    }
 
     return wxApp::OnExit();
 }
@@ -463,7 +806,7 @@ SpiceViewerCanvas::SpiceViewerCanvas(wxFrame *parent)
 {
     m_pDraggedDev = NULL;
     m_idxDraggedDev = wxNOT_FOUND;
-    m_gridSize = 40;
+    m_gridSize = DEFAULT_GRID_SIZE;
     m_gridPen = wxPen(*wxLIGHT_GREY, 1, wxPENSTYLE_DOT);
     m_bShowGrid = true;
 
@@ -570,6 +913,8 @@ void SpiceViewerCanvas::OnMouseUp(wxMouseEvent &event)
     {
         // rotate the device being dragged
         m_pDraggedDev->rotateClockwise();
+        m_ckt.updateBoundingBox();
+        UpdateVirtualSize();
         Refresh();
     }
 }

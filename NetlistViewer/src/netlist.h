@@ -303,7 +303,9 @@ class svParserSPICE
 public:
     svParserSPICE() {}
     
-    //! Loads a SPICE netlist and returns the array of parsed subcircuits.
+    //! Loads a SPICE netlist and returns its drawable circuit(s). If a
+    //! top-level circuit is present, embedded .SUBCKT model definitions are
+    //! treated as implementation details and the top-level circuit is returned.
     bool load(svCircuitArray& ret, const std::string& filename);
 };
 

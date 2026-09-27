@@ -1,20 +1,41 @@
-> :warning: **This project is looking for maintainers / developers. The original author is not using this since a long time and is just doing some basic maintainance. The software still needs quite a bit of work to get into a truly usable status. Please consider contributing if you find this software useful. Thanks.**
-
 # Netlist Viewer
 
-Netlist Viewer is a tool capable of loading SPICE netlists and convert them in a schematic (i.e. graphical) format.
-The graphical representations helps to understand the electrical/electronic circuit represented by the SPICE netlist, and save some tedious work.
+Netlist Viewer turns SPICE and PSpice netlists into cleaner, easier-to-read
+schematic diagrams. It can be used interactively as a desktop viewer or from
+the command line to render a netlist directly to a PNG image.
 
-# What is a netlist?
+> [!IMPORTANT]
+> This repository is a fork of
+> [f18m/netlist-viewer](https://github.com/f18m/netlist-viewer). The fork is
+> focused on producing prettier schematic output through improved automatic
+> placement, conventional wiring, clearer labels, and headless image export.
+> It is not an official upstream release.
 
-A [circuit diagram](https://en.wikipedia.org/wiki/Circuit_diagram) can be represented in a very compact form using a [netlist](https://en.wikipedia.org/wiki/Netlist). Wikipedia's definition of the netlist is "a list of the electronic components in a circuit and a list of the nodes they are connected to".
-An example of how a netlist actually looks like is:
+## Improvements in this fork
 
-```
+- Topology-aware automatic placement that favors a conventional left-to-right
+  signal flow and keeps components from overlapping.
+- Orthogonal, obstacle-aware wire routing with shared trunks, junction dots,
+  ground symbols, and global power-rail markers.
+- Clearer component annotations with horizontal reference names, formatted
+  values and units, and model names where appropriate.
+- Improved transistor, JFET, independent-source, and waveform rendering.
+- Support for both standalone `.SUBCKT` definitions and normal top-level
+  SPICE/PSpice decks.
+- Command-line PNG export for use in scripts, reports, and other applications.
+
+## What is a netlist?
+
+A [netlist](https://en.wikipedia.org/wiki/Netlist) describes the components in
+an electrical circuit and the nodes that connect them. It is a compact text
+representation of a [circuit diagram](https://en.wikipedia.org/wiki/Circuit_diagram).
+For example:
+
+```spice
 .SUBCKT test_misc1 IN OUT
 
 V1 0 IN DC=4V
-R1 IN 2 
+R1 IN 2 1K
 Q1 3 2 0 NPNstd
 M1 OUT 3 0 NMOSstd
 D1 OUT 0 DIODEstd
@@ -22,46 +43,96 @@ D1 OUT 0 DIODEstd
 .ENDS
 ```
 
-# Screenshots
+## Usage
 
-![1](https://github.com/f18m/netlist-viewer/assets/9748595/ff8c1017-f92b-4f33-b399-36a6affe25de)
-![2](https://github.com/f18m/netlist-viewer/assets/9748595/9a7054e3-cc1b-469b-82e9-95874dc7773a)
+### Interactive viewer
 
-# Binaries
+Launch Netlist Viewer without arguments to open the normal desktop interface:
 
-You can download binaries from [Github releases](https://github.com/f18m/netlist-viewer/releases).
-These binaries are not garantueed to work on your system. 
+```text
+netlist_viewer.exe
+```
 
-## Windows
+Open a supported SPICE netlist from the application and use the canvas to
+inspect, move, rotate, and zoom the automatically generated schematic.
 
-Note that if NetListViewer fails to start after installing with the Windows Installer and complains
-about DLL dependencies named `VCRUNTIME<something>.dll`, it means that your Windows installation
-is lacking the VC++ redistributable package.
-You can install the latest VC Redistributable package following [https://vcredist.com/quick/](https://vcredist.com/quick/).
+### Headless PNG export
 
-## Linux
+Render a netlist directly to a PNG without opening the interactive window:
 
-A better way to distribute applications for Linux would be using [Flatpak](https://github.com/f18m/netlist-viewer/issues/6).
-If you are interested in such work, please open an issue/PR.
+```text
+netlist_viewer.exe --input circuit.cir --output circuit.png
+```
 
-# Past versions of Netlist-viewer
+Short flags are also available:
 
-Past versions, namely version 0.1 and version 0.2, were hosted in Sourceforge, see https://sourceforge.net/projects/netlistviewer/.
-All new developments have been moved into this Github project.
+```text
+netlist_viewer.exe -i circuit.cir -o circuit.png
+```
 
-# How to build from sources
+Run `netlist_viewer.exe --help` for the complete command-line usage. Headless
+rendering uses the same parser, placement, routing, and drawing code as the GUI
+and automatically crops unused whitespace from the exported image.
 
-NetListViewer is a pretty simple application with 2 main dependencies: [wxWidgets](https://www.wxwidgets.org/) and [Boost](https://www.boost.org/).
-Some simple notes on how to build NetListViewer for:
+## Input support and limitations
 
-* [Windows](NetlistViewer/build/win/README.md) 
-* [Linux](NetlistViewer/build/linux/README.md) 
-* [MacOS](NetlistViewer/build/macos/README.md)
+- Common passive components, independent and controlled sources, diodes,
+  BJTs, MOSFETs, and JFETs are supported.
+- Files may contain a standalone `.SUBCKT` or a top-level circuit ending in
+  `.END`.
+- Embedded `.SUBCKT` model definitions are ignored when a drawable top-level
+  circuit is present.
+- Simulation directives such as `.DC`, `.AC`, `.TRAN`, `.PRINT`, and `.MODEL`
+  are ignored because this project visualizes circuits; it does not simulate
+  them.
+- Standalone files containing multiple `.SUBCKT` blocks are not yet supported
+  by the viewer interface.
+- Subcircuit-instance elements and other unsupported SPICE device types may
+  cause parsing to fail.
+- Automatic layout is heuristic. Dense or unusual circuits may still benefit
+  from manual adjustment in the interactive viewer.
 
-are available.
+## Building from source
 
-# Status
+Netlist Viewer depends primarily on
+[wxWidgets](https://www.wxwidgets.org/) and [Boost](https://www.boost.org/).
+Platform-specific instructions are available for:
 
-The software is usable even if it could be improved very much.
-Since the creation of the project (2010) I have not been using this tool anymore (I'm not doing any HW design anymore) so this software will not be further improved unless someone else wants to step up to improve it.
-Pull requests are of course welcome anyhow.
+- [Windows](NetlistViewer/build/win/README.md)
+- [Linux](NetlistViewer/build/linux/README.md)
+- [macOS](NetlistViewer/build/macos/README.md)
+
+Development of this fork has primarily used the Visual Studio 2022 Windows
+project. If a Windows build reports a missing `VCRUNTIME*.dll`, install the
+current [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist).
+
+This fork currently expects users to build from source. Binaries published by
+the upstream project predate and do not include the rendering changes described
+above.
+
+## Upstream project and history
+
+The original Netlist Viewer was created by Francesco Montorsi in 2010. Versions
+0.1 and 0.2 were published on
+[SourceForge](https://sourceforge.net/projects/netlistviewer/), and later work
+moved to the
+[upstream GitHub repository](https://github.com/f18m/netlist-viewer).
+
+This fork retains the upstream history and builds on that work with a stronger
+focus on schematic presentation and automated image generation. Changes that
+are generally useful to the original project may also be suitable for upstream
+contribution.
+
+## Contributing
+
+Bug reports and pull requests are welcome. Helpful contributions include
+parser compatibility, layout and routing improvements, reproducible netlist
+fixtures, cross-platform build fixes, and automated visual regression tests.
+
+When reporting a rendering problem, include the smallest netlist that
+reproduces it and, when possible, the generated PNG.
+
+## License
+
+Netlist Viewer is available under the [MIT License](LICENSE). The original
+copyright and license notice are retained from the upstream project.
